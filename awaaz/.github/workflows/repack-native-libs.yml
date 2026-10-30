@@ -1,0 +1,102 @@
+name: Repack native libs
+
+# Republishes the native-lib archives keeping only the files the build actually
+# consumes (the config plugin reads native/logosdelivery/arm64-v8a/*.so, the
+# podspec vendors native/logosdelivery/ios/*.a). Earlier archives also carried
+# ndk-build output and three redundant copies of liblogosdelivery.so.
+#
+# Runs on GitHub's network so no large upload is needed from a dev machine.
+# Prints the SHA-256 of each archive for scripts/fetch-native-libs.sh.
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_tag:
+        description: Release tag to read archives from
+        required: true
+        default: native-libs-v1
+      to_tag:
+        description: Release tag to publish the pruned archives to
+        required: true
+        default: native-libs-v2
+
+permissions:
+  contents: write
+
+jobs:
+  repack:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FROM_TAG: ${{ inputs.from_tag }}
+      TO_TAG: ${{ inputs.to_tag }}
+    steps:
+      - name: Download current archives
+        run: |
+          gh release download "$FROM_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'native-libs-*.tar.gz' --dir in
+          ls -lh in
+
+      - name: Prune to the consumed set
+        run: |
+          set -euo pipefail
+          mkdir -p work && tar xzf in/native-libs-android.tar.gz -C work
+          tar xzf in/native-libs-ios.tar.gz -C work
+
+          echo "--- before ---"; du -sh work/native/logosdelivery/*
+
+          cd work
+          # Keep only what the plugin and podspec read.
+          find native -mindepth 1 -maxdepth 2 -type d \
+            ! -path native/logosdelivery \
+            ! -path native/logosdelivery/arm64-v8a \
+            ! -path native/logosdelivery/ios \
+            -exec rm -rf {} +
+          find native/logosdelivery/ios -type f ! -name '*.a' -delete
+          # AppleDouble sidecars from the archives originally built on macOS.
+          find native -name '._*' -delete
+
+          echo "--- after ---"; find native -type f | sort
+
+          # Fail loudly rather than publishing an archive that cannot build.
+          for f in \
+            native/logosdelivery/arm64-v8a/libc++_shared.so \
+            native/logosdelivery/arm64-v8a/librln.so \
+            native/logosdelivery/arm64-v8a/liblogosdelivery.so \
+            native/logosdelivery/arm64-v8a/liblogos_messaging_jni.so \
+            native/logosdelivery/ios/liblogosdelivery.a \
+            native/logosdelivery/ios/librln.a ; do
+            test -s "$f" || { echo "missing $f"; exit 1; }
+          done
+
+          tar czf ../native-libs-android.tar.gz native/logosdelivery/arm64-v8a
+          tar czf ../native-libs-ios.tar.gz     native/logosdelivery/ios
+
+      - name: Verify the new archives untar
+        run: |
+          set -euo pipefail
+          for f in native-libs-ios.tar.gz native-libs-android.tar.gz; do
+            tar tzf "$f" > /dev/null
+          done
+          ls -lh native-libs-*.tar.gz
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          gh release view "$TO_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+            gh release create "$TO_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Prebuilt native libraries v2" \
+              --notes "Only the files the build consumes. Restore with scripts/fetch-native-libs.sh"
+          gh release upload "$TO_TAG" \
+            native-libs-ios.tar.gz native-libs-android.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Report checksums
+        run: |
+          {
+            echo '### SHA-256 for scripts/fetch-native-libs.sh'
+            echo '```'
+            sha256sum native-libs-ios.tar.gz native-libs-android.tar.gz
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          sha256sum native-libs-ios.tar.gz native-libs-android.tar.gz

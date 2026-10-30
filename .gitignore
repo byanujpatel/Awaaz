@@ -1,0 +1,24 @@
+# macOS
+.DS_Store
+
+# Build outputs and bundles (share these via Releases, not git)
+*.apk
+*.aab
+*.ipa
+*.zip
+
+# Logs
+*.log
+
+# --- hub/ ---
+hub/.venv/
+hub/__pycache__/
+*.pyc
+# Logos node private keys: never commit (start.sh regenerates them)
+hub/nodekey
+hub/relay2.key
+hub/*.peer
+# Local Logos store database
+hub/nwaku-data/
+
+# --- awaaz/ (app) has its own .gitignore ---

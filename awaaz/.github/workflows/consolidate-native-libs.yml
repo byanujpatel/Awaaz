@@ -1,0 +1,60 @@
+name: Consolidate native lib parts
+
+# The native-libs release was originally uploaded as 8 MB parts because the
+# upload link was slow and GitHub's asset upload cannot resume. This job
+# reassembles them into one archive per platform on GitHub's own network, so no
+# large upload is needed from a developer machine.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag holding the parts
+        required: true
+        default: native-libs-v1
+
+permissions:
+  contents: write
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      IOS_SHA256: 78ed59dea64883514858395e3fa27135ae812ca16fd0a891dbc1ac28920cb41a
+      ANDROID_SHA256: 6e41971ceac237ebcfad390befd1031d0d6a748441d82a12069ab482dd1828aa
+    steps:
+      - name: Download parts
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'part-*' --dir parts
+          ls -l parts
+
+      - name: Reassemble and verify
+        run: |
+          set -euo pipefail
+          cat parts/part-ios-a[a-e]        > native-libs-ios.tar.gz
+          cat parts/part-android-a[a-f]    > native-libs-android.tar.gz
+
+          echo "$IOS_SHA256  native-libs-ios.tar.gz"         | sha256sum -c -
+          echo "$ANDROID_SHA256  native-libs-android.tar.gz" | sha256sum -c -
+
+          # Prove the archives are intact, not merely the right bytes.
+          tar tzf native-libs-ios.tar.gz     > /dev/null
+          tar tzf native-libs-android.tar.gz > /dev/null
+          ls -lh native-libs-*.tar.gz
+
+      - name: Upload consolidated archives
+        run: |
+          gh release upload "$TAG" \
+            native-libs-ios.tar.gz native-libs-android.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Remove the now-redundant parts
+        run: |
+          set -euo pipefail
+          for p in parts/part-*; do
+            name=$(basename "$p")
+            echo "deleting $name"
+            gh release delete-asset "$TAG" "$name" --repo "$GITHUB_REPOSITORY" --yes
+          done
